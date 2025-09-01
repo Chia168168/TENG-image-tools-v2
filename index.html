@@ -1,4 +1,43 @@
-<!DOCTYPE html>
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -479,11 +518,6 @@
             <div id="previewContainer" class="thumbnail-container"></div>
         </div>
         
-        <div id="base64Output" class="section mode-specific hidden" data-mode="base64">
-            <h3 style="margin: 0; font-size: 16px; color: #0033A0;">Base64 內容</h3>
-            <div id="base64OutputContainer"></div>
-        </div>
-        
         <div class="tooltip">
             <span style="font-size: 12px; color: #005B99;">使用說明</span>
             <span class="tooltip-text">支援圖片尺寸調整、格式轉換（尺寸調整預設 JPEG，Base64 模式預設 PNG，品質 90%）及 Base64 互轉。HEIC/HEIF 支援，多檔案打包為 ZIP。請勿分享敏感 Base64 字串。資料夾選擇僅支援 Chrome、Edge 和 Safari。</span>
@@ -679,6 +713,13 @@
                 btn.classList.toggle('active', btn.dataset.value === value);
             });
             currentFormatValue = value;
+            if (value === 'image/jpeg') {
+                currentQualityValue = '0.9';
+                document.querySelectorAll('.quality-button').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.value === '0.9');
+                });
+                document.getElementById('qualityInput').classList.add('hidden');
+            }
             toggleQualityContainer();
             updateFileList();
         }
@@ -696,7 +737,6 @@
             selectedFileType = null;
             document.getElementById('fileList').innerHTML = '';
             document.getElementById('previewContainer').innerHTML = '';
-            document.getElementById('base64OutputContainer').innerHTML = '';
             document.getElementById('base64Text').value = '';
             document.getElementById('downloadButton').style.display = 'none';
             document.getElementById('progressContainer').style.display = 'none';
@@ -1128,6 +1168,7 @@
             });
             document.querySelector('.status-indicator').className = 'status-indicator status-complete';
         }
+
         async function processResize() {
             if (originalImages.length === 0 || !originalImages.some(item => item.type === 'image')) {
                 showError('請先選擇圖片檔案！');
@@ -1226,7 +1267,6 @@
                 }
             }
 
-            document.getElementById('progressContainer').style.display = 'none'; // 隱藏進度條
             const downloadButton = document.getElementById('downloadButton');
             downloadButton.style.display = 'block';
 
@@ -1245,6 +1285,7 @@
                 }
             }
             
+            document.getElementById('progressContainer').style.display = 'none';
             enableUI();
             showSuccess('圖片處理完成！');
         }
@@ -1255,12 +1296,10 @@
                 return;
             }
 
-            // 檢查是否為PNG格式，如果是則顯示提醒
-            if (currentFormatValue === 'image/png') {
-                showSuccess('注意：輸出格式為PNG，將自動縮小圖片至長寬不超過1280像素。');
-            }
-
             disableUI();
+            if (currentFormatValue === 'image/png') {
+                showSuccess('注意：輸出格式為 PNG，圖片將自動縮小至長寬均小於 1280 像素。');
+            }
             const zip = new JSZip();
             base64Data = [];
             const totalImages = originalImages.filter(item => item.type === 'image').length;
@@ -1278,36 +1317,21 @@
                 processedCount++;
                 updateProgress(processedCount, totalImages, item.file.name, 0);
 
-                let targetWidth = item.img.width;
-                let targetHeight = item.img.height;
-
-                // 如果是PNG格式，且圖片寬或高大於1280，則縮小至1280以內（保持比例）
-                if (currentFormatValue === 'image/png') {
-                    const maxDimension = 1280;
-                    if (targetWidth > maxDimension || targetHeight > maxDimension) {
-                        const ratio = targetWidth / targetHeight;
-                        if (ratio > 1) {
-                            targetWidth = maxDimension;
-                            targetHeight = Math.round(maxDimension / ratio);
-                        } else {
-                            targetHeight = maxDimension;
-                            targetWidth = Math.round(maxDimension * ratio);
-                        }
-                    }
-                }
-
                 const canvas = document.createElement('canvas');
-                canvas.width = targetWidth;
-                canvas.height = targetHeight;
-                const ctx = canvas.getContext('2d');
+                const img = item.img;
+                let width = img.width;
+                let height = img.height;
                 
-                // 如果是PNG，需要透明背景，否則白色背景
-                if (currentFormatValue !== 'image/png') {
-                    ctx.fillStyle = 'white';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (currentFormatValue === 'image/png' && (width > 1280 || height > 1280)) {
+                    const scale = Math.min(1280 / width, 1280 / height);
+                    width = Math.round(width * scale);
+                    height = Math.round(height * scale);
                 }
-                
-                ctx.drawImage(item.img, 0, 0, targetWidth, targetHeight);
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
 
                 try {
                     // 模擬處理進度
@@ -1316,9 +1340,8 @@
                         await new Promise(resolve => setTimeout(resolve, 50));
                     }
                     
-                    // 設置品質：如果是JPEG，使用0.9；否則使用currentQualityValue
-                    let qualityValue = currentFormatValue === 'image/jpeg' ? 0.9 : parseFloat(currentQualityValue);
-                    const base64String = canvas.toDataURL(currentFormatValue, qualityValue);
+                    const quality = currentFormatValue === 'image/jpeg' ? 0.9 : 1.0;
+                    const base64String = canvas.toDataURL(currentFormatValue, quality);
                     base64Data.push({ name: item.file.name, base64: base64String });
 
                     if (totalImages > 1) {
@@ -1335,7 +1358,6 @@
                 }
             }
 
-            document.getElementById('progressContainer').style.display = 'none'; // 隱藏進度條
             const downloadButton = document.getElementById('downloadButton');
             downloadButton.style.display = 'block';
 
@@ -1355,6 +1377,7 @@
                 }
             }
             
+            document.getElementById('progressContainer').style.display = 'none';
             enableUI();
             showSuccess('Base64轉換完成！');
         }
@@ -1363,7 +1386,7 @@
             let base64String = document.getElementById('base64Text').value.trim();
             const format = currentFormatValue;
             const qualityInput = parseInt(document.getElementById('qualityInput').value);
-            const quality = currentQualityValue === 'custom' ? (qualityInput / 100) || 0.9 : parseFloat(currentQualityValue);
+            const quality = currentFormatValue === 'image/jpeg' ? 0.9 : (currentQualityValue === 'custom' ? (qualityInput / 100) || 0.9 : parseFloat(currentQualityValue));
             const base64Files = originalImages.filter(item => item.type === 'base64');
 
             if (!base64String && base64Files.length === 0) {
@@ -1518,7 +1541,7 @@
                 }
             }
 
-            document.getElementById('progressContainer').style.display = 'none'; // 隱藏進度條
+            document.getElementById('progressContainer').style.display = 'none';
             enableUI();
             showSuccess('Base64轉圖片完成！');
         }
